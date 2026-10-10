@@ -6,7 +6,9 @@ stop words, and compare Porter stemming with WordNet lemmatization.
 Lesson used by every later phase: cleaning destroys PII, so detection always
 runs on the tidied ORIGINAL text, never on the cleaned text.
 """
+import os
 import re
+import tempfile
 from functools import lru_cache
 
 import nltk
@@ -14,12 +16,26 @@ from nltk.corpus import stopwords
 from nltk.stem import PorterStemmer, WordNetLemmatizer
 from nltk.tokenize import sent_tokenize, word_tokenize
 
+
+def nltk_dir():
+    """A private folder for NLTK data: NLTK refuses folders other users can write to."""
+    d = os.path.join(os.path.expanduser("~"), "nltk_data")
+    try:
+        os.makedirs(d, exist_ok=True)
+        os.chmod(d, 0o700)
+    except OSError:
+        d = tempfile.mkdtemp(prefix="nltk_data_")
+    if d not in nltk.data.path:
+        nltk.data.path.append(d)
+    return d
+
+
 for pkg, path in [("punkt", "tokenizers/punkt"), ("punkt_tab", "tokenizers/punkt_tab"),
                   ("stopwords", "corpora/stopwords"), ("wordnet", "corpora/wordnet.zip")]:
     try:
         nltk.data.find(path)
     except LookupError:
-        nltk.download(pkg, quiet=True)
+        nltk.download(pkg, download_dir=nltk_dir(), quiet=True)
 
 # Patterns used to grab formatted PII before cleaning
 PII_PATTERNS = {

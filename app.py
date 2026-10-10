@@ -11,6 +11,7 @@ from collections import Counter
 
 import pandas as pd
 import streamlit as st
+import torch
 
 import phase1_preprocessing as p1
 import phase2_detection as p2
@@ -33,6 +34,11 @@ COLORS = {"AUTO_REDACT": "#f5b7b1", "REVIEW": "#f9e79f", "LOG_ONLY": "#d5d8dc"}
 TAG = r"\[[A-Z]+_REDACTED\]"
 
 st.set_page_config(page_title="RedactIQ", page_icon="🛡️", layout="wide")
+try:    # in a container with a CPU quota (e.g. Streamlit Cloud) use only the CPUs it is given
+    quota, period = open("/sys/fs/cgroup/cpu.max").read().split()
+    torch.set_num_threads(max(1, int(quota) // int(period)))
+except (OSError, ValueError):   # no quota (a normal PC): keep torch's default
+    pass
 
 
 # ---------------- Models: trained once at startup on their built-in synthetic data ----------------

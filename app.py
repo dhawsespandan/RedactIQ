@@ -1,8 +1,7 @@
 # RedactIQ - Explainable PII detection and redaction with confidence-scored audit trails.
 # One Streamlit app that runs Assignments 1-6 as a single pipeline.
 #
-#   pip install streamlit nltk spacy scikit-learn gensim torch pandas
-#   python -m spacy download en_core_web_sm
+#   pip install -r requirements.txt      (includes spaCy's en_core_web_sm model)
 #   streamlit run app.py
 #
 # If spaCy cannot be loaded the app still runs, with the spaCy detector switched off.
@@ -150,6 +149,7 @@ dets = {"regex": p2.regex_detect(doc) if use_rx else [],
 context = {"A3 learned classifier": lambda t, e: p3.context_prob(a3, t, e),
            "A2 trigger words": p2.trigger_rule, "Off": lambda t, e: 0.0}[ctx_mode]
 ents = p2.score(p2.fuse([d for v in dets.values() for d in v]), doc, context, auto, review)
+n_fused = len(ents)
 bands = Counter(e["band"] for e in ents)
 m = st.columns(6)
 m[0].metric("Regex", len(dets["regex"]))
@@ -165,11 +165,14 @@ st.caption(f"{sum(map(len, dets.values()))} raw detections fused into {len(ents)
 review_items = [e for e in ents if e["band"] == "REVIEW"]
 if review_items:
     st.subheader("3 · Review checklist")
-    st.caption("These scored between the two thresholds. They are redacted unless you untick them.")
+    st.caption("These scored between the two thresholds. They are redacted unless you untick them; "
+               "your choice applies to every occurrence of the value.")
     for e in review_items:
         e["redact"] = st.checkbox(
             f"Redact `{e['text']}` · {e['label']} · conf {e['conf']:.2f} · votes {'+'.join(dict.fromkeys(e['src']))}",
             value=True, key=f"review-{e['start']}-{e['end']}-{e['text']}")
+ents = p2.propagate(doc, ents)                     # a value redacted once is redacted everywhere
+repeats = sum("repeat_of" in e for e in ents)
 redacted = p2.redact(doc, ents)
 
 # ---------------- 4 · Original vs redacted ----------------
@@ -211,7 +214,8 @@ else:
 
 # ---------------- 7 · Download ----------------
 st.subheader("7 · Download")
-masked_rows = [{**r, "Entity": "***" if r["Action"] == "redacted" else r["Entity"]} for r in p2.audit_rows(ents)]
+masked_rows = [{**r, "Entity": "***" if r["Action"].startswith("redacted") else r["Entity"]}
+               for r in p2.audit_rows(ents)]
 report = "\n\n".join([
     "REDACTIQ REPORT", "REDACTED DOCUMENT\n" + redacted, "HINDI TRANSLATION (romanised)\n" + hindi,
     "AUDIT SUMMARY\n" + "\n".join(f"[{i + 1}] {audit_sents[i]}" for i in picked),
@@ -239,12 +243,13 @@ with st.container(border=True):
         table([{"Token": w, "Porter stem": s, "WordNet lemma": l} for w, s, l in pre["norm"]])
 
 with st.container(border=True):
-    merged = sum(map(len, dets.values())) - len(ents)
+    merged = sum(map(len, dets.values())) - n_fused
     st.markdown(
         f"**A2 · Detection, fusion and scoring** · regex {len(dets['regex'])} + spaCy {len(dets['spaCy'])} "
-        f"(+ BiLSTM {len(dets['BiLSTM'])}) detections -> {len(ents)} entities ({merged} duplicates merged by "
+        f"(+ BiLSTM {len(dets['BiLSTM'])}) detections -> {n_fused} entities ({merged} duplicates merged by "
         f"IoU / containment). Noisy-OR confidence gave {bands['AUTO_REDACT']} AUTO_REDACT, {bands['REVIEW']} REVIEW, "
-        f"{bands['LOG_ONLY']} LOG_ONLY; {sum(e['redact'] for e in ents)} redacted right to left.")
+        f"{bands['LOG_ONLY']} LOG_ONLY; {sum(e['redact'] for e in ents)} redacted right to left, "
+        f"{repeats} of them repeats of a value already redacted elsewhere.")
     with st.expander("A2 details"):
         if ents:
             e = max(ents, key=lambda x: len(x["sc"]))
@@ -271,11 +276,14 @@ with st.container(border=True):
         table(a3["sims"])
 
 with st.container(border=True):
-    only_bl = [e["text"] for e in ents if set(e["src"]) == {"bilstm"}]
+    only_bl = [e for e in ents if set(e["src"]) == {"bilstm"} and "repeat_of" not in e]
+    caught = [e["text"] for e in only_bl if e["band"] != "LOG_ONLY"]
+    guesses = [e["text"] for e in only_bl if e["band"] == "LOG_ONLY"]
     st.markdown(
         f"**A4 · BiLSTM tagger (third detector)** · found {len(dets['BiLSTM'])} entities here, "
         f"{sum(e['unseen'] for e in dets['BiLSTM'])} of them made only of words it never saw in training "
-        f"(recognised from shape and context); missed by both regex and spaCy: {', '.join(only_bl) or 'none'}. "
+        f"(recognised from shape and context). Caught with no regex or spaCy vote: {', '.join(caught) or 'none'}; "
+        f"low-confidence guesses, only logged: {', '.join(guesses) or 'none'}. "
         f"Entity F1 on unseen test names {a4['report'][-1]['F1']}; ablation "
         f"{' -> '.join(str(r['F1']) for r in a4['ablation'])} (embedding only -> + shape -> + word dropout).")
     with st.expander("A4 details"):

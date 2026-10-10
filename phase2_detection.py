@@ -3,8 +3,9 @@
 Detector 1 = regular expressions, Detector 2 = spaCy NER (Detector 3, the BiLSTM, is phase 4).
 Detections of the same entity are fused (IoU > 0.5 or containment), scored by a
 noisy-OR over the detector votes plus a context boost, mapped to a decision band
-(AUTO_REDACT / REVIEW / LOG_ONLY) and replaced right to left. Every decision is
-kept as a row of the audit trail.
+(AUTO_REDACT / REVIEW / LOG_ONLY) and replaced right to left; a value redacted
+once is redacted at every occurrence. Every decision is kept as a row of the
+audit trail.
 """
 import re
 
@@ -104,6 +105,20 @@ def score(ents, text, context=trigger_rule, auto=AUTO, review=REVIEW):
     return ents
 
 
+def propagate(text, ents):
+    """A value redacted once is redacted everywhere: each other occurrence becomes a copy of it.
+    Occurrences a reviewer released are respected; weaker detections inside a copy are absorbed."""
+    done = [e for e in ents if e["redact"]]
+    released = [e for e in ents if e["band"] == "REVIEW" and not e["redact"]]
+    copies = []
+    for e in done:
+        for m in re.finditer(r"(?<!\w)" + re.escape(e["text"]) + r"(?!\w)", text):
+            if not any(m.start() < d["end"] and d["start"] < m.end() for d in done + released + copies):
+                copies.append({**e, "start": m.start(), "end": m.end(), "repeat_of": f"{e['start']}-{e['end']}"})
+    inside = lambda x: any(c["start"] <= x["start"] and x["end"] <= c["end"] for c in copies)
+    return sorted([x for x in ents if not inside(x)] + copies, key=lambda x: x["start"])
+
+
 def redact(text, ents):
     """Replace every entity marked for redaction, right to left so earlier offsets stay valid."""
     last = len(text)
@@ -120,7 +135,8 @@ def audit_rows(ents):
              "Votes": "+".join(dict.fromkeys(e["src"])),
              "Vote scores": ", ".join(f"{s:.2f}" for s in e["sc"]),
              "Context": round(e["ctx"], 2), "Conf": round(e["conf"], 3), "Decision": e["band"],
-             "Action": "redacted" if e["redact"] else "kept"} for e in ents]
+             "Action": ("redacted" if e["redact"] else "kept")
+                       + (f" (repeat of {e['repeat_of']})" if "repeat_of" in e else "")} for e in ents]
 
 
 # ---------------- Evaluation on a small labelled test set ----------------
